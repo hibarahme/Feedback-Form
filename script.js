@@ -710,8 +710,23 @@
     return result;
   }
 
+  function submissionFilename(file) {
+    const original = file.name || "attachment";
+    const dot = original.lastIndexOf(".");
+    const ending = dot > 0 ? original.slice(dot + 1).toLowerCase() : "";
+    const extension = Object.hasOwn(FILE_TYPES, ending) && FILE_TYPES[ending] === file.type ? ending
+      : Object.keys(FILE_TYPES).find(key => FILE_TYPES[key] === file.type) || "bin";
+    // Use ASCII names for compatibility with download headers, including macOS
+    // screenshot names with a narrow space. Keep originals in the draft/report.
+    const stem = (dot > 0 ? original.slice(0, dot) : original).normalize("NFKD")
+      .replace(/\p{M}/gu, "").replace(/[^a-zA-Z0-9._ -]+/g, "-")
+      .replace(/\s+/g, " ").replace(/^[ .-]+|[ .-]+$/g, "")
+      .slice(0, 140).trim() || "attachment";
+    return `${stem}.${extension}`;
+  }
+
   async function sendRequestIdentity(endpoint, report, attachments) {
-    const description = JSON.stringify({ endpoint, report, files: attachments.map(file => [file.id, file.name, file.type, file.blob.size]) });
+    const description = JSON.stringify({ endpoint, report, files: attachments.map(file => [file.id, submissionFilename(file), file.type, file.blob.size]) });
     const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(description));
     const fingerprint = [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
     try {
@@ -724,8 +739,8 @@
   async function uploadFile(file, formId, tools, signal, onProgress) {
     const previous = uploadedFiles.get(file.id);
     if (previous?.formId === formId && Date.now() - previous.at < 30 * 60 * 1000) return previous.reference;
-    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_").slice(-100);
-    const path = `f/${formId}/${crypto.randomUUID()}-${safeName}`;
+    const filename = submissionFilename(file);
+    const path = `f/${formId}/${crypto.randomUUID()}-${filename.replace(/ /g, "_")}`;
     // The service reports the store's actual access mode with its short-lived token.
     const permission = await withDeadline(async uploadSignal => {
       const response = await fetch("https://formsubmit.app/api/uploads", {
@@ -744,7 +759,7 @@
     if (!/^https:\/\/[a-z0-9.-]+\.blob\.vercel-storage\.com\//i.test(result.url || "")) {
       throw new FeedbackError("The attachment service returned an invalid file address.");
     }
-    const reference = { field: file.field, url: result.url, filename: file.name };
+    const reference = { field: file.field, url: result.url, filename };
     uploadedFiles.set(file.id, { formId, at: Date.now(), reference });
     return reference;
   }
@@ -819,7 +834,7 @@
       const size = attachments.reduce((bytes, file) => bytes + file.blob.size, 0);
       // Small submissions go straight to FormSubmit, without a separate storage upload.
       if (size <= 3_500_000) {
-        attachments.forEach(file => data.append(file.field, file.blob, file.name));
+        attachments.forEach(file => data.append(file.field, file.blob, submissionFilename(file)));
       } else {
         const references = [];
         for (const [index, file] of attachments.entries()) {
